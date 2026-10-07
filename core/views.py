@@ -1,11 +1,12 @@
 import csv
+import os
 import random
 from datetime import timedelta
 from django.contrib.auth import authenticate, login as django_login, logout as django_logout
 from django.contrib.auth.models import User
 from django.db import transaction, models, IntegrityError
 from django.db.models import Q
-from django.http import HttpResponse
+from django.http import HttpResponse, FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
@@ -25,6 +26,7 @@ from .models import (
     Student,
     StudentAnswer,
     AttemptQuestion,
+    SubmissionFile,
 )
 from .permissions import IsAdminUser, IsStudentUser
 from .serializers import (
@@ -37,14 +39,32 @@ from .serializers import (
     StudentSerializer,
 )
 
+# File-upload submission limits. Uploaded files are never executed
+# server-side - they are only stored for an admin to manually download,
+# preview (text/code types) and grade.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = {
+    '.c', '.h', '.cpp', '.hpp', '.cc', '.py', '.java', '.js', '.jsx', '.ts', '.tsx',
+    '.go', '.rs', '.rb', '.php', '.cs', '.kt', '.swift', '.sql', '.sh', '.ipynb',
+    '.html', '.css', '.json', '.xml', '.yaml', '.yml', '.md', '.txt',
+    '.pdf', '.doc', '.docx', '.zip', '.tar', '.gz', '.rar',
+}
+TEXT_PREVIEW_EXTENSIONS = {
+    '.c', '.h', '.cpp', '.hpp', '.cc', '.py', '.java', '.js', '.jsx', '.ts', '.tsx',
+    '.go', '.rs', '.rb', '.php', '.cs', '.kt', '.swift', '.sql', '.sh', '.ipynb',
+    '.html', '.css', '.json', '.xml', '.yaml', '.yml', '.md', '.txt',
+}
+MAX_PREVIEW_BYTES = 200 * 1024
+
 
 def calculate_attempt_score(attempt):
     """
     Authoritative server-side score calculation.
     Maximum marks calculated using ONLY the questions assigned to this attempt.
-    Correct = question.marks
-    Incorrect = 0
-    Unanswered = 0
+
+    MCQ: Correct = question.marks, Incorrect/Unanswered = 0.
+    FILE_UPLOAD: score is the sum of each task's admin-assigned manual_score
+    (0 for tasks not yet graded), since code submissions can't be auto-scored.
     """
     attempt_qs = attempt.attempt_questions.select_related('question').all()
     if attempt_qs.exists():
@@ -54,6 +74,12 @@ def calculate_attempt_score(attempt):
         questions = [eq.question for eq in attempt.exam.exam_questions.select_related('question').all()]
 
     max_score = sum(q.marks for q in questions)
+
+    if attempt.exam.exam_type == 'FILE_UPLOAD':
+        manual_scores = {aq.question_id: aq.manual_score for aq in attempt_qs}
+        score = sum(manual_scores.get(q.id) or 0.0 for q in questions)
+        percentage = round((score / max_score * 100), 2) if max_score > 0 else 0.0
+        return float(score), float(max_score), percentage
 
     answers = {
         ans.question_id: ans.selected_option
@@ -84,6 +110,8 @@ def auto_submit_attempt(attempt, reason='TIME_EXPIRED'):
             locked_attempt.status = 'AUTO_SUBMITTED'
             locked_attempt.submitted_at = timezone.now()
             locked_attempt.submission_reason = reason
+            if locked_attempt.exam.exam_type == 'FILE_UPLOAD':
+                locked_attempt.is_graded = False
             locked_attempt.save()
             return locked_attempt
     return locked_attempt
@@ -406,6 +434,12 @@ def student_save_answer(request, attempt_id):
     except ExamAttempt.DoesNotExist:
         return Response({"error": "Attempt not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    if attempt.exam.exam_type != 'MCQ':
+        return Response(
+            {"error": "This exam uses file uploads. Use the file upload endpoint instead."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     if attempt.status != 'IN_PROGRESS':
         return Response({"error": "Your attempt has already been submitted."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -466,6 +500,140 @@ def student_save_answer(request, attempt_id):
 
 @api_view(['POST'])
 @permission_classes([IsStudentUser])
+def student_upload_submission_file(request, attempt_id):
+    """
+    Uploads (and replaces) the file(s) a student submits for one FILE_UPLOAD
+    task. Re-uploading for the same task clears the previous files for it -
+    each call represents the student's current full submission for that task.
+    Files are stored as-is and never executed.
+    """
+    student = request.user.student_profile
+    try:
+        attempt = ExamAttempt.objects.select_related('exam').get(id=attempt_id, student=student)
+    except ExamAttempt.DoesNotExist:
+        return Response({"error": "Attempt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if attempt.exam.exam_type != 'FILE_UPLOAD':
+        return Response({"error": "This exam does not accept file uploads."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if attempt.status != 'IN_PROGRESS':
+        return Response({"error": "Your attempt has already been submitted."}, status=status.HTTP_400_BAD_REQUEST)
+
+    now = timezone.now()
+    allowed_end = min(
+        attempt.started_at + timedelta(minutes=attempt.exam.duration_minutes),
+        attempt.exam.end_datetime
+    )
+    if now > allowed_end:
+        auto_submit_attempt(attempt, reason='TIME_EXPIRED')
+        return Response(
+            {"error": "Your exam was automatically submitted because the exam time expired."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    question_id = request.data.get('question_id')
+    if not question_id:
+        return Response({"error": "question_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not attempt.attempt_questions.filter(question_id=question_id).exists():
+        return Response(
+            {"error": "This task was not assigned to your exam attempt."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    files = request.FILES.getlist('files')
+    if not files:
+        return Response({"error": "No files were provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+    total_size = sum(f.size for f in files)
+    if total_size > MAX_UPLOAD_BYTES:
+        return Response(
+            {"error": "Total upload size exceeds the 50MB limit for this task."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    for f in files:
+        ext = os.path.splitext(f.name)[1].lower()
+        if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            return Response(
+                {"error": f"File type '{ext or 'unknown'}' is not allowed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    with transaction.atomic():
+        old_files = list(SubmissionFile.objects.filter(attempt=attempt, question_id=question_id))
+        for old in old_files:
+            old.file.delete(save=False)
+        SubmissionFile.objects.filter(attempt=attempt, question_id=question_id).delete()
+
+        created = []
+        for f in files:
+            sf = SubmissionFile.objects.create(
+                attempt=attempt,
+                question_id=question_id,
+                file=f,
+                original_filename=f.name,
+                file_size=f.size,
+            )
+            created.append(sf)
+
+    return Response({
+        'question_id': int(question_id),
+        'files': [
+            {'id': sf.id, 'filename': sf.original_filename, 'size': sf.file_size, 'uploaded_at': sf.uploaded_at}
+            for sf in created
+        ],
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsStudentUser])
+def student_delete_submission_file(request, attempt_id, file_id):
+    """
+    Lets a student remove a single wrongly-uploaded file before submitting.
+    """
+    student = request.user.student_profile
+    try:
+        attempt = ExamAttempt.objects.get(id=attempt_id, student=student)
+    except ExamAttempt.DoesNotExist:
+        return Response({"error": "Attempt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if attempt.status != 'IN_PROGRESS':
+        return Response({"error": "Your attempt has already been submitted."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        sf = SubmissionFile.objects.get(id=file_id, attempt=attempt)
+    except SubmissionFile.DoesNotExist:
+        return Response({"error": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    sf.file.delete(save=False)
+    sf.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['GET'])
+@permission_classes([IsStudentUser])
+def student_download_submission_file(request, attempt_id, file_id):
+    """
+    Lets a student re-download a file they previously uploaded, to confirm
+    the right version was submitted.
+    """
+    student = request.user.student_profile
+    try:
+        attempt = ExamAttempt.objects.get(id=attempt_id, student=student)
+    except ExamAttempt.DoesNotExist:
+        return Response({"error": "Attempt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        sf = SubmissionFile.objects.get(id=file_id, attempt=attempt)
+    except SubmissionFile.DoesNotExist:
+        return Response({"error": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    return FileResponse(sf.file.open('rb'), as_attachment=True, filename=sf.original_filename)
+
+
+@api_view(['POST'])
+@permission_classes([IsStudentUser])
 def student_submit_exam(request, attempt_id):
     """
     Submits the exam and computes score atomically.
@@ -492,6 +660,8 @@ def student_submit_exam(request, attempt_id):
         locked_attempt.status = 'SUBMITTED'
         locked_attempt.submitted_at = timezone.now()
         locked_attempt.submission_reason = 'NORMAL'
+        if locked_attempt.exam.exam_type == 'FILE_UPLOAD':
+            locked_attempt.is_graded = False
         locked_attempt.save()
 
     return Response({
@@ -500,6 +670,7 @@ def student_submit_exam(request, attempt_id):
         'score': locked_attempt.score,
         'max_score': locked_attempt.max_score,
         'percentage': locked_attempt.percentage,
+        'is_graded': locked_attempt.is_graded,
         'submitted_at': locked_attempt.submitted_at,
     })
 
@@ -517,6 +688,12 @@ def student_record_violation(request, attempt_id):
         attempt = ExamAttempt.objects.select_related('exam').get(id=attempt_id, student=student)
     except ExamAttempt.DoesNotExist:
         return Response({"error": "Attempt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if attempt.exam.exam_type != 'MCQ':
+        return Response(
+            {"error": "This exam does not track integrity violations."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     if attempt.status != 'IN_PROGRESS':
         return Response({"error": "Exam is not in progress."}, status=status.HTTP_400_BAD_REQUEST)
@@ -536,6 +713,8 @@ def student_record_violation(request, attempt_id):
             locked_attempt.status = 'AUTO_SUBMITTED'
             locked_attempt.submitted_at = timezone.now()
             locked_attempt.submission_reason = 'EXAM_INTEGRITY_VIOLATION'
+            if locked_attempt.exam.exam_type == 'FILE_UPLOAD':
+                locked_attempt.is_graded = False
             locked_attempt.save()
 
             return Response({
@@ -717,6 +896,9 @@ def admin_results_view(request):
             models.Q(student__full_name__icontains=search)
         )
 
+    if request.query_params.get('pending_review') == 'true':
+        queryset = queryset.filter(exam__exam_type='FILE_UPLOAD', is_graded=False)
+
     # Check for CSV export request
     if request.query_params.get('export') == 'csv' or request.query_params.get('format') == 'csv':
         response = HttpResponse(content_type='text/csv')
@@ -761,3 +943,146 @@ def admin_results_view(request):
 
     serializer = ResultSerializer(queryset, many=True)
     return Response(serializer.data)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAdminUser])
+def admin_grading_view(request, attempt_id):
+    """
+    GET: returns a submitted FILE_UPLOAD attempt's tasks, each with its
+    uploaded files and current grading state, for the admin review screen.
+    POST: saves per-task scores/feedback (body: {"grades": [{"question_id",
+    "score", "feedback"}, ...]}), recomputes the attempt's total score, and
+    marks the attempt fully graded once every task has been scored.
+    """
+    try:
+        attempt = ExamAttempt.objects.select_related(
+            'exam', 'student', 'student__department'
+        ).get(id=attempt_id)
+    except ExamAttempt.DoesNotExist:
+        return Response({"error": "Attempt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if attempt.exam.exam_type != 'FILE_UPLOAD':
+        return Response({"error": "This exam does not use manual grading."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if attempt.status not in ['SUBMITTED', 'AUTO_SUBMITTED']:
+        return Response({"error": "This attempt has not been submitted yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if request.method == 'POST':
+        grades = request.data.get('grades', [])
+        aq_by_qid = {aq.question_id: aq for aq in attempt.attempt_questions.select_related('question').all()}
+
+        for g in grades:
+            qid = g.get('question_id')
+            aq = aq_by_qid.get(qid)
+            if not aq:
+                continue
+            score_val = g.get('score')
+            if score_val is None or score_val == '':
+                continue
+            try:
+                score_val = float(score_val)
+            except (TypeError, ValueError):
+                return Response({"error": f"Invalid score for question {qid}."}, status=status.HTTP_400_BAD_REQUEST)
+            if score_val < 0 or score_val > aq.question.marks:
+                return Response(
+                    {"error": f"Score for question {qid} must be between 0 and {aq.question.marks}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            aq.manual_score = score_val
+            aq.feedback = g.get('feedback', aq.feedback) or ''
+            aq.graded_at = timezone.now()
+            aq.graded_by = request.user
+            aq.save()
+
+        score, max_score, percentage = calculate_attempt_score(attempt)
+        attempt.score = score
+        attempt.max_score = max_score
+        attempt.percentage = percentage
+        attempt.is_graded = all(
+            aq.graded_at is not None for aq in attempt.attempt_questions.all()
+        )
+        attempt.save()
+
+    attempt_questions = attempt.attempt_questions.select_related('question').order_by('question_order')
+    files_by_qid = {}
+    for f in attempt.submission_files.select_related('question').order_by('uploaded_at'):
+        files_by_qid.setdefault(f.question_id, []).append(f)
+
+    tasks = []
+    for aq in attempt_questions:
+        q = aq.question
+        tasks.append({
+            'question_id': q.id,
+            'question_text': q.question_text,
+            'marks': q.marks,
+            'instructions': q.explanation,
+            'files': [
+                {'id': f.id, 'filename': f.original_filename, 'size': f.file_size, 'uploaded_at': f.uploaded_at}
+                for f in files_by_qid.get(q.id, [])
+            ],
+            'manual_score': aq.manual_score,
+            'feedback': aq.feedback,
+            'graded': aq.graded_at is not None,
+        })
+
+    return Response({
+        'attempt_id': attempt.id,
+        'exam_title': attempt.exam.title,
+        'roll_number': attempt.student.roll_number,
+        'student_name': attempt.student.full_name,
+        'department_name': attempt.student.department.name,
+        'status': attempt.status,
+        'is_graded': attempt.is_graded,
+        'score': attempt.score,
+        'max_score': attempt.max_score,
+        'percentage': attempt.percentage,
+        'submitted_at': attempt.submitted_at,
+        'tasks': tasks,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_file_preview(request, file_id):
+    """
+    Returns inline text content for code/text submission files so the
+    grading UI can render them without a download. Non-text files report
+    previewable=False so the UI falls back to a download link.
+    """
+    try:
+        sf = SubmissionFile.objects.get(id=file_id)
+    except SubmissionFile.DoesNotExist:
+        return Response({"error": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    ext = os.path.splitext(sf.original_filename)[1].lower()
+    if ext not in TEXT_PREVIEW_EXTENSIONS:
+        return Response({'previewable': False, 'filename': sf.original_filename})
+
+    try:
+        with sf.file.open('rb') as fh:
+            raw = fh.read(MAX_PREVIEW_BYTES + 1)
+        truncated = len(raw) > MAX_PREVIEW_BYTES
+        text = raw[:MAX_PREVIEW_BYTES].decode('utf-8', errors='replace')
+        return Response({
+            'previewable': True,
+            'filename': sf.original_filename,
+            'content': text,
+            'truncated': truncated,
+        })
+    except OSError:
+        return Response({'previewable': False, 'filename': sf.original_filename})
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_file_download(request, file_id):
+    """
+    Downloads a student's submission file for admin review.
+    """
+    try:
+        sf = SubmissionFile.objects.get(id=file_id)
+    except SubmissionFile.DoesNotExist:
+        return Response({"error": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    return FileResponse(sf.file.open('rb'), as_attachment=True, filename=sf.original_filename)

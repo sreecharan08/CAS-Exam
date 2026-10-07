@@ -17,6 +17,7 @@ import { Students } from './pages/admin/Students';
 import { Questions } from './pages/admin/Questions';
 import { Exams } from './pages/admin/Exams';
 import { AdminResults } from './pages/admin/AdminResults';
+import { Grading } from './pages/admin/Grading';
 
 const RootRedirect: React.FC = () => {
   const { isAuthenticated, role, isLoading } = useAuth();
@@ -73,6 +74,7 @@ export const App: React.FC = () => {
                         <Route path="/admin/questions" element={<Questions />} />
                         <Route path="/admin/exams" element={<Exams />} />
                         <Route path="/admin/results" element={<AdminResults />} />
+                        <Route path="/admin/grading/:attemptId" element={<Grading />} />
                       </Route>
 
                       {/* Fallback */}

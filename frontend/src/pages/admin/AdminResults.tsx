@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api, type Department, type ExamResult } from '../../api/client';
 import {
   Award,
@@ -7,10 +8,13 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
-  AlertCircle
+  AlertCircle,
+  Clock3,
+  PenLine
 } from 'lucide-react';
 
 export const AdminResults: React.FC = () => {
+  const navigate = useNavigate();
   const [results, setResults] = useState<ExamResult[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [exams, setExams] = useState<any[]>([]);
@@ -21,6 +25,7 @@ export const AdminResults: React.FC = () => {
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
   const [examFilter, setExamFilter] = useState('');
+  const [pendingOnly, setPendingOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
@@ -34,6 +39,7 @@ export const AdminResults: React.FC = () => {
         department_id: deptFilter,
         exam_id: examFilter,
         search,
+        pending_review: pendingOnly,
       });
 
       if (res.results) {
@@ -50,7 +56,7 @@ export const AdminResults: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, deptFilter, examFilter, search]);
+  }, [page, deptFilter, examFilter, search, pendingOnly]);
 
   useEffect(() => {
     const loadMetadata = async () => {
@@ -158,6 +164,21 @@ export const AdminResults: React.FC = () => {
                 ))}
               </select>
             </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setPendingOnly((p) => !p);
+                setPage(1);
+              }}
+              className={`inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold border transition ${
+                pendingOnly
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <Clock3 className="h-4 w-4 mr-1.5" /> Pending Review Only
+            </button>
           </div>
         </div>
 
@@ -212,12 +233,34 @@ export const AdminResults: React.FC = () => {
                       <td className="px-5 py-4 text-slate-800 max-w-xs truncate" title={res.exam_title}>
                         {res.exam_title}
                       </td>
-                      <td className="px-5 py-4 text-center font-bold text-slate-900">
-                        {res.score} / {res.max_score}
-                      </td>
-                      <td className="px-5 py-4 text-center font-extrabold text-sky-700">
-                        {res.percentage}%
-                      </td>
+                      {res.exam_type === 'FILE_UPLOAD' && !res.is_graded ? (
+                        <td colSpan={2} className="px-5 py-4 text-center">
+                          <button
+                            onClick={() => navigate(`/admin/grading/${res.id}`)}
+                            className="inline-flex items-center px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-sm transition"
+                          >
+                            <PenLine className="h-3.5 w-3.5 mr-1.5" /> Grade Submission
+                          </button>
+                        </td>
+                      ) : (
+                        <>
+                          <td className="px-5 py-4 text-center font-bold text-slate-900">
+                            {res.score} / {res.max_score}
+                            {res.exam_type === 'FILE_UPLOAD' && (
+                              <button
+                                onClick={() => navigate(`/admin/grading/${res.id}`)}
+                                title="Review grading"
+                                className="ml-2 text-slate-400 hover:text-sky-700 transition"
+                              >
+                                <PenLine className="h-3.5 w-3.5 inline" />
+                              </button>
+                            )}
+                          </td>
+                          <td className="px-5 py-4 text-center font-extrabold text-sky-700">
+                            {res.percentage}%
+                          </td>
+                        </>
+                      )}
                       <td className="px-5 py-4 text-center">
                         <span
                           className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${

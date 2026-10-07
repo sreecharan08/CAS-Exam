@@ -22,6 +22,8 @@ export interface Department {
   created_at?: string;
 }
 
+export type ExamType = 'MCQ' | 'FILE_UPLOAD';
+
 export interface Option {
   id?: number;
   option_key: 'A' | 'B' | 'C' | 'D';
@@ -31,11 +33,13 @@ export interface Option {
 
 export interface Question {
   id: number;
+  question_type?: ExamType;
   question_text: string;
   marks: number;
   category?: string;
   difficulty?: string;
   is_active?: boolean;
+  explanation?: string; // For FILE_UPLOAD: grading instructions shown to the admin reviewer
   options: Option[];
   order?: number;
   exam_question_id?: number;
@@ -45,6 +49,7 @@ export interface ExamCard {
   id: number;
   title: string;
   description: string;
+  exam_type: ExamType;
   duration_minutes: number;
   start_datetime: string;
   end_datetime: string;
@@ -61,11 +66,26 @@ export interface ExamCard {
   total_marks: number;
 }
 
+export interface SubmissionFileMeta {
+  id: number;
+  filename: string;
+  size: number;
+  uploaded_at: string;
+}
+
+export interface TaskSubmission {
+  files: SubmissionFileMeta[];
+  manual_score: number | null;
+  feedback: string;
+  graded: boolean;
+}
+
 export interface ExamAttemptDetail {
   id: number;
   exam_id: number;
   exam_title: string;
   exam_description: string;
+  exam_type: ExamType;
   duration_minutes: number;
   end_datetime: string;
   status: 'NOT_STARTED' | 'IN_PROGRESS' | 'SUBMITTED' | 'AUTO_SUBMITTED';
@@ -74,11 +94,13 @@ export interface ExamAttemptDetail {
   score: number;
   max_score: number;
   percentage: number;
+  is_graded: boolean;
   violation_count: number;
   submission_reason: string;
   remaining_seconds: number;
   questions: Question[];
   answers: Record<number, { option_id: number | null; option_key: string | null }>;
+  submissions: Record<number, TaskSubmission>;
   server_time: string;
 }
 
@@ -90,14 +112,49 @@ export interface ExamResult {
   department_code: string;
   exam_id: number;
   exam_title: string;
+  exam_type: ExamType;
   score: number;
   max_score: number;
   percentage: number;
+  is_graded: boolean;
   status: string;
   violation_count: number;
   submission_reason: string;
   started_at: string;
   submitted_at: string;
+}
+
+export interface GradingTask {
+  question_id: number;
+  question_text: string;
+  marks: number;
+  instructions: string;
+  files: SubmissionFileMeta[];
+  manual_score: number | null;
+  feedback: string;
+  graded: boolean;
+}
+
+export interface GradingPayload {
+  attempt_id: number;
+  exam_title: string;
+  roll_number: string;
+  student_name: string;
+  department_name: string;
+  status: string;
+  is_graded: boolean;
+  score: number;
+  max_score: number;
+  percentage: number;
+  submitted_at: string;
+  tasks: GradingTask[];
+}
+
+export interface FilePreview {
+  previewable: boolean;
+  filename: string;
+  content?: string;
+  truncated?: boolean;
 }
 
 export interface DashboardStats {
@@ -153,6 +210,26 @@ export async function apiRequest<T>(
   return data as T;
 }
 
+async function downloadWithAuth(endpoint: string, filename: string): Promise<void> {
+  const token = localStorage.getItem('cas_auth_token');
+  const response = await fetch(`${BASE_URL}${endpoint}`, {
+    headers: token ? { Authorization: `Token ${token}` } : {},
+    credentials: 'same-origin',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to download file');
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   // Auth
   login: (credentials: { username?: string; roll_number?: string; password: string }) =>
@@ -192,6 +269,23 @@ export const api = {
       }
     ),
 
+  uploadSubmissionFile: (attemptId: number, questionId: number, files: File[]) => {
+    const formData = new FormData();
+    formData.append('question_id', String(questionId));
+    files.forEach((f) => formData.append('files', f));
+    return apiRequest<{ question_id: number; files: SubmissionFileMeta[] }>(
+      `/attempts/${attemptId}/upload/`,
+      { method: 'POST', body: formData }
+    );
+  },
+
+  deleteSubmissionFile: (attemptId: number, fileId: number) =>
+    apiRequest<void>(`/attempts/${attemptId}/files/${fileId}/`, { method: 'DELETE' }),
+
+  downloadSubmissionFile: async (attemptId: number, fileId: number, filename: string) => {
+    await downloadWithAuth(`/attempts/${attemptId}/files/${fileId}/download/`, filename);
+  },
+
   submitExam: (attemptId: number) =>
     apiRequest<{
       success: boolean;
@@ -199,6 +293,7 @@ export const api = {
       score: number;
       max_score: number;
       percentage: number;
+      is_graded: boolean;
       submitted_at: string;
     }>(`/attempts/${attemptId}/submit/`, {
       method: 'POST',
@@ -279,12 +374,13 @@ export const api = {
       method: 'DELETE',
     }),
 
-  getAdminResults: (params: { page?: number; exam_id?: string; department_id?: string; search?: string }) => {
+  getAdminResults: (params: { page?: number; exam_id?: string; department_id?: string; search?: string; pending_review?: boolean }) => {
     const q = new URLSearchParams();
     if (params.page) q.append('page', params.page.toString());
     if (params.exam_id) q.append('exam_id', params.exam_id);
     if (params.department_id) q.append('department_id', params.department_id);
     if (params.search) q.append('search', params.search);
+    if (params.pending_review) q.append('pending_review', 'true');
     return apiRequest<any>(`/admin/results/?${q.toString()}`);
   },
 
@@ -295,5 +391,22 @@ export const api = {
     if (params.department_id) q.append('department_id', params.department_id);
     if (params.search) q.append('search', params.search);
     return `${BASE_URL}/admin/results/?${q.toString()}`;
+  },
+
+  // Manual grading (FILE_UPLOAD exams)
+  getAdminGrading: (attemptId: number) =>
+    apiRequest<GradingPayload>(`/admin/attempts/${attemptId}/grading/`),
+
+  saveAdminGrading: (attemptId: number, grades: { question_id: number; score: number; feedback: string }[]) =>
+    apiRequest<GradingPayload>(`/admin/attempts/${attemptId}/grading/`, {
+      method: 'POST',
+      body: JSON.stringify({ grades }),
+    }),
+
+  getAdminFilePreview: (fileId: number) =>
+    apiRequest<FilePreview>(`/admin/files/${fileId}/preview/`),
+
+  downloadAdminFile: async (fileId: number, filename: string) => {
+    await downloadWithAuth(`/admin/files/${fileId}/download/`, filename);
   },
 };

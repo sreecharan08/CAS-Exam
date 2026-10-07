@@ -90,6 +90,16 @@ STATICFILES_DIRS = []
 if (BASE_DIR / 'frontend' / 'dist').exists():
     STATICFILES_DIRS.append(BASE_DIR / 'frontend' / 'dist')
 
+# Student exam file-upload submissions. Not served via a public MEDIA_URL -
+# all access goes through authenticated API views (see student/admin file
+# download/preview endpoints in core/views.py) so one student can never
+# guess another's file URL.
+MEDIA_ROOT = Path(os.environ.get('MEDIA_ROOT', BASE_DIR / 'media'))
+os.makedirs(MEDIA_ROOT, exist_ok=True)
+
+# Headroom above the 50MB app-level submission size limit enforced in views.py.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 60 * 1024 * 1024
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST Framework Configuration

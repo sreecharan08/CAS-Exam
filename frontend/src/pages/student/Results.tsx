@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, type ExamResult } from '../../api/client';
-import { 
-  Award, 
-  CheckCircle, 
-  AlertCircle, 
-  ArrowLeft, 
-  ShieldAlert, 
-  Calendar 
+import {
+  Award,
+  CheckCircle,
+  AlertCircle,
+  ArrowLeft,
+  ShieldAlert,
+  Calendar,
+  Clock3
 } from 'lucide-react';
 
 export const Results: React.FC = () => {
@@ -104,20 +105,30 @@ export const Results: React.FC = () => {
                   </div>
 
                   {/* Score Highlight Card */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 my-4 flex items-center justify-between">
-                    <div>
-                      <div className="text-xs text-slate-500 font-semibold uppercase">Total Score</div>
-                      <div className="text-2xl font-black text-slate-900">
-                        {res.score} <span className="text-sm font-normal text-slate-500">/ {res.max_score}</span>
+                  {res.exam_type === 'FILE_UPLOAD' && !res.is_graded ? (
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 my-4 flex items-center space-x-3">
+                      <Clock3 className="h-6 w-6 text-amber-600 flex-shrink-0" />
+                      <div>
+                        <div className="text-sm font-bold text-amber-800">Pending Review</div>
+                        <div className="text-xs text-amber-700">Your submission is awaiting manual grading.</div>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="text-xs text-slate-500 font-semibold uppercase">Percentage</div>
-                      <div className="text-2xl font-black text-sky-700">
-                        {res.percentage}%
+                  ) : (
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 my-4 flex items-center justify-between">
+                      <div>
+                        <div className="text-xs text-slate-500 font-semibold uppercase">Total Score</div>
+                        <div className="text-2xl font-black text-slate-900">
+                          {res.score} <span className="text-sm font-normal text-slate-500">/ {res.max_score}</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-slate-500 font-semibold uppercase">Percentage</div>
+                        <div className="text-2xl font-black text-sky-700">
+                          {res.percentage}%
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Submission details */}
                   <div className="space-y-2 text-xs text-slate-600 border-t border-slate-100 pt-3">
@@ -148,7 +159,11 @@ export const Results: React.FC = () => {
 
                 <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
                   <span className="flex items-center font-medium">
-                    <CheckCircle className="h-3.5 w-3.5 mr-1 text-emerald-600" /> Verified Server Score
+                    {res.exam_type === 'FILE_UPLOAD' && !res.is_graded ? (
+                      <><Clock3 className="h-3.5 w-3.5 mr-1 text-amber-600" /> Awaiting Grading</>
+                    ) : (
+                      <><CheckCircle className="h-3.5 w-3.5 mr-1 text-emerald-600" /> Verified Server Score</>
+                    )}
                   </span>
                   <span className="font-mono text-slate-400">Attempt ID: #{res.id}</span>
                 </div>

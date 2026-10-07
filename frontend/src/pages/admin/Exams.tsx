@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { api, type Department, type Question } from '../../api/client';
+import { api, type Department, type Question, type ExamType } from '../../api/client';
 import {
   FileText,
   Plus,
@@ -10,13 +10,15 @@ import {
   X,
   AlertCircle,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  UploadCloud
 } from 'lucide-react';
 
 interface ExamItem {
   id: number;
   title: string;
   description: string;
+  exam_type: ExamType;
   duration_minutes: number;
   questions_per_attempt: number;
   question_pool_size?: number;
@@ -45,6 +47,7 @@ export const Exams: React.FC = () => {
   // Form Fields
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [examType, setExamType] = useState<ExamType>('MCQ');
   const [durationMinutes, setDurationMinutes] = useState(30);
   const [questionsPerAttempt, setQuestionsPerAttempt] = useState(30);
   const [startDatetime, setStartDatetime] = useState('');
@@ -80,6 +83,7 @@ export const Exams: React.FC = () => {
     setEditingExam(null);
     setTitle('');
     setDescription('');
+    setExamType('MCQ');
     setDurationMinutes(30);
     setQuestionsPerAttempt(30);
 
@@ -103,6 +107,7 @@ export const Exams: React.FC = () => {
     setEditingExam(exam);
     setTitle(exam.title);
     setDescription(exam.description);
+    setExamType(exam.exam_type || 'MCQ');
     setDurationMinutes(exam.duration_minutes);
     setQuestionsPerAttempt(exam.questions_per_attempt || 30);
 
@@ -179,6 +184,7 @@ export const Exams: React.FC = () => {
     const payload = {
       title: title.trim(),
       description: description.trim(),
+      exam_type: examType,
       duration_minutes: durationMinutes,
       questions_per_attempt: questionsPerAttempt,
       start_datetime: start.toISOString(),
@@ -209,6 +215,14 @@ export const Exams: React.FC = () => {
     } catch (err: any) {
       alert(err.message || 'Failed to delete exam');
     }
+  };
+
+  // Only questions matching this exam's type can be assigned to it.
+  const questionsForType = availableQuestions.filter((q) => (q.question_type || 'MCQ') === examType);
+
+  const handleExamTypeChange = (type: ExamType) => {
+    setExamType(type);
+    setSelectedQuestions([]); // Clear selections - they belonged to the previous type's pool
   };
 
   // Calculate live question & marks summary for selected questions in modal
@@ -288,6 +302,18 @@ export const Exams: React.FC = () => {
                   <p className="text-xs text-slate-600 line-clamp-2 mb-4">
                     {exam.description || 'No description.'}
                   </p>
+
+                  <div className="mb-3">
+                    {exam.exam_type === 'FILE_UPLOAD' ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-purple-100 text-purple-800">
+                        <UploadCloud className="h-3 w-3 mr-1" /> File Upload
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-sky-100 text-sky-800">
+                        MCQ
+                      </span>
+                    )}
+                  </div>
 
                   {/* Target Departments */}
                   <div className="mb-4 flex flex-wrap gap-1.5">
@@ -386,6 +412,41 @@ export const Exams: React.FC = () => {
                   />
                 </div>
 
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-700 mb-2">
+                    Exam Type
+                  </label>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleExamTypeChange('MCQ')}
+                      disabled={!!editingExam}
+                      className={`flex-1 py-2 px-3 rounded-lg text-sm font-semibold border transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                        examType === 'MCQ'
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      Multiple Choice (MCQ)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleExamTypeChange('FILE_UPLOAD')}
+                      disabled={!!editingExam}
+                      className={`flex-1 py-2 px-3 rounded-lg text-sm font-semibold border transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                        examType === 'FILE_UPLOAD'
+                          ? 'bg-purple-600 text-white border-purple-600'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      File Upload (Manually Graded)
+                    </button>
+                  </div>
+                  {editingExam && (
+                    <p className="text-xs text-slate-400 mt-1">Exam type cannot be changed after creation.</p>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div>
                     <label className="block text-xs font-bold uppercase text-slate-700 mb-1">
@@ -404,7 +465,7 @@ export const Exams: React.FC = () => {
 
                   <div>
                     <label className="block text-xs font-bold uppercase text-slate-700 mb-1">
-                      Questions / Student
+                      {examType === 'FILE_UPLOAD' ? 'Tasks / Student' : 'Questions / Student'}
                     </label>
                     <input
                       type="number"
@@ -468,12 +529,18 @@ export const Exams: React.FC = () => {
                 <div className="pt-2">
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-xs font-bold uppercase text-slate-700">
-                      Assign Questions from Question Bank
+                      {examType === 'FILE_UPLOAD' ? 'Assign Tasks from Question Bank' : 'Assign Questions from Question Bank'}
                     </label>
                     <div className="text-xs font-bold text-teal-800 bg-teal-50 px-2.5 py-1 rounded-md border border-teal-200">
-                      Total: {selectedQuestions.length} Questions | {calculatedTotalMarks} Marks
+                      Total: {selectedQuestions.length} {examType === 'FILE_UPLOAD' ? 'Tasks' : 'Questions'} | {calculatedTotalMarks} Marks
                     </div>
                   </div>
+                  {questionsForType.length === 0 && (
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                      No {examType === 'FILE_UPLOAD' ? 'file-upload tasks' : 'MCQ questions'} exist in the question bank yet.
+                      Create some in Question Bank first.
+                    </p>
+                  )}
 
                   {/* Selected questions list with ordering */}
                   {selectedQuestions.length > 0 && (
@@ -509,9 +576,9 @@ export const Exams: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Available questions checkboxes */}
+                  {/* Available questions checkboxes (filtered to this exam's type) */}
                   <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 p-2">
-                    {availableQuestions.map((q) => (
+                    {questionsForType.map((q) => (
                       <label key={q.id} className="flex items-start space-x-2 py-2 px-2 hover:bg-slate-50 cursor-pointer text-xs rounded">
                         <input
                           type="checkbox"

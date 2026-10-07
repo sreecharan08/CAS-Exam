@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { api, type Question } from '../../api/client';
+import { api, type Question, type ExamType } from '../../api/client';
 import {
   HelpCircle,
   Plus,
@@ -8,7 +8,8 @@ import {
   CheckCircle2,
   X,
   AlertCircle,
-  Search
+  Search,
+  UploadCloud
 } from 'lucide-react';
 
 export const Questions: React.FC = () => {
@@ -19,6 +20,7 @@ export const Questions: React.FC = () => {
   // Search & Filter
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'' | ExamType>('');
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -26,6 +28,7 @@ export const Questions: React.FC = () => {
   const [modalError, setModalError] = useState<string | null>(null);
 
   // Form State
+  const [questionType, setQuestionType] = useState<ExamType>('MCQ');
   const [questionText, setQuestionText] = useState('');
   const [marks, setMarks] = useState<number>(2);
   const [category, setCategory] = useState('Cyber Security');
@@ -37,6 +40,7 @@ export const Questions: React.FC = () => {
     D: '',
   });
   const [correctKey, setCorrectKey] = useState<'A' | 'B' | 'C' | 'D'>('A');
+  const [gradingInstructions, setGradingInstructions] = useState('');
 
   const fetchQuestions = useCallback(async () => {
     setLoading(true);
@@ -60,22 +64,26 @@ export const Questions: React.FC = () => {
 
   const openCreateModal = () => {
     setEditingQuestion(null);
+    setQuestionType('MCQ');
     setQuestionText('');
     setMarks(2);
     setCategory('Cyber Security');
     setDifficulty('Medium');
     setOptions({ A: '', B: '', C: '', D: '' });
     setCorrectKey('A');
+    setGradingInstructions('');
     setModalError(null);
     setIsModalOpen(true);
   };
 
   const openEditModal = (q: Question) => {
     setEditingQuestion(q);
+    setQuestionType(q.question_type || 'MCQ');
     setQuestionText(q.question_text);
     setMarks(q.marks);
     setCategory(q.category || '');
     setDifficulty(q.difficulty || 'Medium');
+    setGradingInstructions(q.explanation || '');
 
     const optsMap: { [key: string]: string } = { A: '', B: '', C: '', D: '' };
     let correct: 'A' | 'B' | 'C' | 'D' = 'A';
@@ -103,23 +111,25 @@ export const Questions: React.FC = () => {
       return;
     }
 
-    if (!options.A.trim() || !options.B.trim() || !options.C.trim() || !options.D.trim()) {
+    if (questionType === 'MCQ' && (!options.A.trim() || !options.B.trim() || !options.C.trim() || !options.D.trim())) {
       setModalError('All 4 options (A, B, C, D) must be provided.');
       return;
     }
 
     const payload = {
+      question_type: questionType,
       question_text: questionText.trim(),
       marks: parseInt(marks.toString(), 10) || 1,
       category: category.trim(),
       difficulty,
+      explanation: questionType === 'FILE_UPLOAD' ? gradingInstructions.trim() : '',
       is_active: true,
-      options: [
+      options: questionType === 'MCQ' ? [
         { option_key: 'A', option_text: options.A.trim(), is_correct: correctKey === 'A' },
         { option_key: 'B', option_text: options.B.trim(), is_correct: correctKey === 'B' },
         { option_key: 'C', option_text: options.C.trim(), is_correct: correctKey === 'C' },
         { option_key: 'D', option_text: options.D.trim(), is_correct: correctKey === 'D' },
-      ],
+      ] : [],
     };
 
     try {
@@ -134,6 +144,10 @@ export const Questions: React.FC = () => {
       setModalError(err.message || 'Failed to save question.');
     }
   };
+
+  const filteredQuestions = typeFilter
+    ? questions.filter((q) => (q.question_type || 'MCQ') === typeFilter)
+    : questions;
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this question?')) return;
@@ -180,6 +194,15 @@ export const Questions: React.FC = () => {
 
           <div className="flex items-center space-x-3 w-full md:w-auto justify-end">
             <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as '' | ExamType)}
+              className="py-2 px-3 border border-slate-300 rounded-lg text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+            >
+              <option value="">All Types</option>
+              <option value="MCQ">MCQ</option>
+              <option value="FILE_UPLOAD">File Upload</option>
+            </select>
+            <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
               className="py-2 px-3 border border-slate-300 rounded-lg text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-600"
@@ -204,13 +227,13 @@ export const Questions: React.FC = () => {
             <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
             <p className="text-sm font-medium text-slate-500">Loading questions...</p>
           </div>
-        ) : questions.length === 0 ? (
+        ) : filteredQuestions.length === 0 ? (
           <div className="bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center text-slate-500 text-sm">
             No questions found. Click "Add New Question" to create one.
           </div>
         ) : (
           <div className="space-y-4">
-            {questions.map((q, idx) => (
+            {filteredQuestions.map((q, idx) => (
               <div
                 key={q.id}
                 className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition"
@@ -220,6 +243,15 @@ export const Questions: React.FC = () => {
                     <span className="font-bold text-xs bg-slate-100 text-slate-700 px-2.5 py-1 rounded-md">
                       #{idx + 1}
                     </span>
+                    {(q.question_type || 'MCQ') === 'FILE_UPLOAD' ? (
+                      <span className="inline-flex items-center text-xs font-semibold bg-purple-50 text-purple-700 px-2.5 py-1 rounded-md border border-purple-100">
+                        <UploadCloud className="h-3 w-3 mr-1" /> File Upload
+                      </span>
+                    ) : (
+                      <span className="text-xs font-semibold bg-sky-50 text-sky-700 px-2.5 py-1 rounded-md border border-sky-100">
+                        MCQ
+                      </span>
+                    )}
                     {q.category && (
                       <span className="text-xs font-semibold bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-md border border-indigo-100">
                         {q.category}
@@ -250,7 +282,17 @@ export const Questions: React.FC = () => {
 
                 <h3 className="text-base font-medium text-slate-900 mb-4">{q.question_text}</h3>
 
-                {/* Options Grid (Admin views correct answer) */}
+                {(q.question_type || 'MCQ') === 'FILE_UPLOAD' ? (
+                  q.explanation ? (
+                    <div className="text-sm p-3 rounded-lg bg-purple-50 border border-purple-100 text-purple-900">
+                      <span className="font-semibold">Grading instructions: </span>
+                      {q.explanation}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-slate-400 italic">No grading instructions provided.</div>
+                  )
+                ) : (
+                /* Options Grid (Admin views correct answer) */
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
                   {q.options.map((opt) => (
                     <div
@@ -281,6 +323,7 @@ export const Questions: React.FC = () => {
                     </div>
                   ))}
                 </div>
+                )}
               </div>
             ))}
           </div>
@@ -292,7 +335,9 @@ export const Questions: React.FC = () => {
             <div className="bg-white max-w-2xl w-full rounded-2xl p-6 shadow-2xl border border-slate-200 my-8">
               <div className="flex items-center justify-between pb-4 border-b border-slate-200 mb-6">
                 <h3 className="text-lg font-bold text-slate-900">
-                  {editingQuestion ? 'Edit MCQ Question' : 'Create New MCQ Question'}
+                  {editingQuestion
+                    ? questionType === 'FILE_UPLOAD' ? 'Edit File Upload Task' : 'Edit MCQ Question'
+                    : questionType === 'FILE_UPLOAD' ? 'Create New File Upload Task' : 'Create New MCQ Question'}
                 </h3>
                 <button
                   onClick={() => setIsModalOpen(false)}
@@ -311,15 +356,52 @@ export const Questions: React.FC = () => {
 
               <form onSubmit={handleSaveQuestion} className="space-y-4">
                 <div>
+                  <label className="block text-xs font-bold uppercase text-slate-700 mb-2">
+                    Question Type
+                  </label>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setQuestionType('MCQ')}
+                      disabled={!!editingQuestion}
+                      className={`flex-1 py-2 px-3 rounded-lg text-sm font-semibold border transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                        questionType === 'MCQ'
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      Multiple Choice
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuestionType('FILE_UPLOAD')}
+                      disabled={!!editingQuestion}
+                      className={`flex-1 py-2 px-3 rounded-lg text-sm font-semibold border transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                        questionType === 'FILE_UPLOAD'
+                          ? 'bg-purple-600 text-white border-purple-600'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      File Upload Task
+                    </button>
+                  </div>
+                  {editingQuestion && (
+                    <p className="text-xs text-slate-400 mt-1">Question type cannot be changed after creation.</p>
+                  )}
+                </div>
+
+                <div>
                   <label className="block text-xs font-bold uppercase text-slate-700 mb-1">
-                    Question Text
+                    {questionType === 'FILE_UPLOAD' ? 'Task / Problem Statement' : 'Question Text'}
                   </label>
                   <textarea
                     required
                     rows={3}
                     value={questionText}
                     onChange={(e) => setQuestionText(e.target.value)}
-                    placeholder="Enter the question text here..."
+                    placeholder={questionType === 'FILE_UPLOAD'
+                      ? 'e.g. Write a program that reverses a linked list and upload your source file.'
+                      : 'Enter the question text here...'}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   />
                 </div>
@@ -370,42 +452,61 @@ export const Questions: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Options A, B, C, D */}
-                <div className="pt-2">
-                  <label className="block text-xs font-bold uppercase text-slate-700 mb-2">
-                    Options & Correct Answer Selection (Exactly one must be correct)
-                  </label>
-                  <div className="space-y-3">
-                    {(['A', 'B', 'C', 'D'] as const).map((key) => (
-                      <div key={key} className="flex items-center space-x-3">
-                        <input
-                          type="radio"
-                          name="correct_option"
-                          checked={correctKey === key}
-                          onChange={() => setCorrectKey(key)}
-                          id={`radio_${key}`}
-                          className="h-4 w-4 text-emerald-600 focus:ring-emerald-500 border-slate-300"
-                        />
-                        <label
-                          htmlFor={`radio_${key}`}
-                          className="w-8 font-bold text-sm text-slate-700 cursor-pointer"
-                        >
-                          {key}:
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={options[key]}
-                          onChange={(e) =>
-                            setOptions((prev) => ({ ...prev, [key]: e.target.value }))
-                          }
-                          placeholder={`Option ${key} text...`}
-                          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
-                        />
-                      </div>
-                    ))}
+                {questionType === 'MCQ' ? (
+                  /* Options A, B, C, D */
+                  <div className="pt-2">
+                    <label className="block text-xs font-bold uppercase text-slate-700 mb-2">
+                      Options & Correct Answer Selection (Exactly one must be correct)
+                    </label>
+                    <div className="space-y-3">
+                      {(['A', 'B', 'C', 'D'] as const).map((key) => (
+                        <div key={key} className="flex items-center space-x-3">
+                          <input
+                            type="radio"
+                            name="correct_option"
+                            checked={correctKey === key}
+                            onChange={() => setCorrectKey(key)}
+                            id={`radio_${key}`}
+                            className="h-4 w-4 text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                          />
+                          <label
+                            htmlFor={`radio_${key}`}
+                            className="w-8 font-bold text-sm text-slate-700 cursor-pointer"
+                          >
+                            {key}:
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={options[key]}
+                            onChange={(e) =>
+                              setOptions((prev) => ({ ...prev, [key]: e.target.value }))
+                            }
+                            placeholder={`Option ${key} text...`}
+                            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="pt-2">
+                    <label className="block text-xs font-bold uppercase text-slate-700 mb-1">
+                      Grading Instructions (shown only to the admin reviewer, not students)
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={gradingInstructions}
+                      onChange={(e) => setGradingInstructions(e.target.value)}
+                      placeholder="e.g. Award full marks for correct logic; deduct 2 marks for missing edge-case handling."
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                    />
+                    <p className="text-xs text-slate-400 mt-1">
+                      Students upload a file (or multiple files) as their answer. There is no auto-grading -
+                      an admin manually reviews the upload and assigns a score up to the marks above.
+                    </p>
+                  </div>
+                )}
 
                 <div className="pt-4 border-t border-slate-200 flex justify-end space-x-3">
                   <button

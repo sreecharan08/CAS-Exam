@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { api, type ExamAttemptDetail, type Question } from '../../api/client';
+import { api, type ExamAttemptDetail, type Question, type TaskSubmission } from '../../api/client';
 import {
   Clock,
   AlertTriangle,
@@ -13,8 +13,19 @@ import {
   Minimize,
   ShieldAlert,
   ArrowLeft,
-  Info
+  Info,
+  UploadCloud,
+  Paperclip,
+  Download,
+  X as XIcon,
+  Clock3
 } from 'lucide-react';
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 export const ExamRoom: React.FC = () => {
   const { examId } = useParams<{ examId: string }>();
@@ -40,6 +51,11 @@ export const ExamRoom: React.FC = () => {
   // Local answers cache: { [questionId]: selectedOptionId }
   const [answers, setAnswers] = useState<Record<number, number | null>>({});
   const [savingAnswer, setSavingAnswer] = useState(false);
+
+  // FILE_UPLOAD exams: { [questionId]: TaskSubmission }
+  const [submissions, setSubmissions] = useState<Record<number, TaskSubmission>>({});
+  const [uploadingQuestionId, setUploadingQuestionId] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Integrity violation tracking
   const [violationCount, setViolationCount] = useState(0);
@@ -84,6 +100,15 @@ export const ExamRoom: React.FC = () => {
       }
       setAnswers(restored);
 
+      // Restore previously uploaded files (FILE_UPLOAD exams)
+      const restoredSubmissions: Record<number, TaskSubmission> = {};
+      if (data.submissions) {
+        Object.entries(data.submissions).forEach(([qId, sub]) => {
+          restoredSubmissions[parseInt(qId, 10)] = sub;
+        });
+      }
+      setSubmissions(restoredSubmissions);
+
       // Check if already completed
       if (data.status === 'SUBMITTED' || data.status === 'AUTO_SUBMITTED') {
         isTerminatedRef.current = true;
@@ -107,6 +132,13 @@ export const ExamRoom: React.FC = () => {
             setAttempt(attemptData);
             setRemainingSeconds(attemptData.remaining_seconds);
             setViolationCount(attemptData.violation_count);
+            if (attemptData.submissions) {
+              const restoredSubmissions: Record<number, TaskSubmission> = {};
+              Object.entries(attemptData.submissions).forEach(([qId, sub]) => {
+                restoredSubmissions[parseInt(qId, 10)] = sub;
+              });
+              setSubmissions(restoredSubmissions);
+            }
             if (attemptData.status === 'SUBMITTED' || attemptData.status === 'AUTO_SUBMITTED') {
               isTerminatedRef.current = true;
               setAutoSubmitted(attemptData.status === 'AUTO_SUBMITTED');
@@ -165,10 +197,19 @@ export const ExamRoom: React.FC = () => {
     }
   };
 
-  // 3. Violation handler with 1.5s cooldown
+  // 3. Violation handler with 1.5s cooldown. File Upload exams are not
+  // proctored - no fullscreen requirement, no tab/focus tracking, no
+  // violation count, no auto-submit-on-violations. Only MCQ exams enforce
+  // this.
   const triggerViolation = useCallback(
     async (triggerName: string) => {
-      if (!attempt || attempt.status !== 'IN_PROGRESS' || isTerminatedRef.current || !hasEnteredFullscreen) {
+      if (
+        !attempt ||
+        attempt.exam_type !== 'MCQ' ||
+        attempt.status !== 'IN_PROGRESS' ||
+        isTerminatedRef.current ||
+        !hasEnteredFullscreen
+      ) {
         return;
       }
 
@@ -201,8 +242,15 @@ export const ExamRoom: React.FC = () => {
   );
 
   // 4. Attach Security Listeners (Visibility, Blur, Fullscreen exit, Right-click prevention)
+  // Only for proctored MCQ exams - File Upload exams skip all of this.
   useEffect(() => {
-    if (!hasEnteredFullscreen || !attempt || attempt.status !== 'IN_PROGRESS' || isTerminatedRef.current) {
+    if (
+      !hasEnteredFullscreen ||
+      !attempt ||
+      attempt.exam_type !== 'MCQ' ||
+      attempt.status !== 'IN_PROGRESS' ||
+      isTerminatedRef.current
+    ) {
       return;
     }
 
@@ -347,6 +395,60 @@ export const ExamRoom: React.FC = () => {
     }
   };
 
+  // 5b. Upload / remove submission files (FILE_UPLOAD exams)
+  const handleFileSelect = async (questionId: number, fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    if (!attempt || attempt.status !== 'IN_PROGRESS' || isTerminatedRef.current) return;
+
+    setUploadError(null);
+    setUploadingQuestionId(questionId);
+    try {
+      const res = await api.uploadSubmissionFile(attempt.id, questionId, Array.from(fileList));
+      setSubmissions((prev) => ({
+        ...prev,
+        [questionId]: {
+          files: res.files,
+          manual_score: prev[questionId]?.manual_score ?? null,
+          feedback: prev[questionId]?.feedback ?? '',
+          graded: prev[questionId]?.graded ?? false,
+        },
+      }));
+    } catch (err: any) {
+      setUploadError(err.message || 'Failed to upload file.');
+      if (err.message?.includes('expired') || err.message?.includes('submitted')) {
+        isTerminatedRef.current = true;
+        setAutoSubmitted(true);
+      }
+    } finally {
+      setUploadingQuestionId(null);
+    }
+  };
+
+  const handleRemoveFile = async (questionId: number, fileId: number) => {
+    if (!attempt || attempt.status !== 'IN_PROGRESS' || isTerminatedRef.current) return;
+    try {
+      await api.deleteSubmissionFile(attempt.id, fileId);
+      setSubmissions((prev) => ({
+        ...prev,
+        [questionId]: {
+          ...prev[questionId],
+          files: (prev[questionId]?.files || []).filter((f) => f.id !== fileId),
+        },
+      }));
+    } catch (err: any) {
+      setUploadError(err.message || 'Failed to remove file.');
+    }
+  };
+
+  const handleDownloadFile = async (questionId: number, fileId: number, filename: string) => {
+    if (!attempt) return;
+    try {
+      await api.downloadSubmissionFile(attempt.id, fileId, filename);
+    } catch (err: any) {
+      setUploadError(err.message || 'Failed to download file.');
+    }
+  };
+
   // 6. Manual Submit
   const handleConfirmSubmit = async () => {
     if (!attempt || isTerminatedRef.current) return;
@@ -414,11 +516,18 @@ export const ExamRoom: React.FC = () => {
     );
   }
 
-  // Fullscreen recovery screen. Normally the Dashboard already put us into
-  // fullscreen before navigating here, so this won't show. It only appears
-  // if fullscreen was lost in a way that needs a fresh user gesture to
-  // restore - e.g. a page refresh or a direct URL visit mid-exam.
-  if (!hasEnteredFullscreen && attempt?.status === 'IN_PROGRESS' && !isTerminatedRef.current) {
+  // Fullscreen recovery screen. Only applies to proctored MCQ exams - File
+  // Upload exams have no fullscreen requirement at all. Normally the
+  // Dashboard already put us into fullscreen before navigating here, so this
+  // won't show for MCQ either. It only appears if fullscreen was lost in a
+  // way that needs a fresh user gesture to restore - e.g. a page refresh or
+  // a direct URL visit mid-exam.
+  if (
+    !hasEnteredFullscreen &&
+    attempt?.status === 'IN_PROGRESS' &&
+    attempt?.exam_type === 'MCQ' &&
+    !isTerminatedRef.current
+  ) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
         <div className="bg-white max-w-md w-full rounded-2xl shadow-2xl p-8 border border-slate-200 text-center">
@@ -473,6 +582,13 @@ export const ExamRoom: React.FC = () => {
               : 'Your responses have been recorded on the server.'}
           </p>
 
+          {attempt?.exam_type === 'FILE_UPLOAD' && !attempt.is_graded && (
+            <div className="mb-6 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm flex items-start">
+              <Clock3 className="h-4 w-4 mr-2 flex-shrink-0 mt-0.5" />
+              Your uploaded files are pending manual review. Your score will appear once a faculty member has graded your submission.
+            </div>
+          )}
+
           <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 mb-6 text-left space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-slate-500">Student Roll Number:</span>
@@ -482,10 +598,12 @@ export const ExamRoom: React.FC = () => {
               <span className="text-slate-500">Status:</span>
               <span className="font-bold text-slate-800">{attempt?.status}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">Violations Recorded:</span>
-              <span className="font-bold text-red-600">{attempt?.violation_count || violationCount} / 5</span>
-            </div>
+            {attempt?.exam_type === 'MCQ' && (
+              <div className="flex justify-between">
+                <span className="text-slate-500">Violations Recorded:</span>
+                <span className="font-bold text-red-600">{attempt?.violation_count || violationCount} / 5</span>
+              </div>
+            )}
           </div>
 
           <button
@@ -500,7 +618,10 @@ export const ExamRoom: React.FC = () => {
   }
 
   const currentQuestion: Question | undefined = attempt?.questions[currentIndex];
-  const answeredCount = Object.values(answers).filter((v) => v !== null && v !== undefined).length;
+  const isFileUploadExam = attempt?.exam_type === 'FILE_UPLOAD';
+  const answeredCount = isFileUploadExam
+    ? Object.values(submissions).filter((s) => s.files.length > 0).length
+    : Object.values(answers).filter((v) => v !== null && v !== undefined).length;
   const totalQuestions = attempt?.questions.length || 0;
 
   return (
@@ -519,40 +640,44 @@ export const ExamRoom: React.FC = () => {
 
         {/* Violations, Fullscreen & Timer */}
         <div className="flex items-center space-x-3 sm:space-x-4">
-          {/* Violation Indicator */}
-          <div
-            className={`flex items-center px-3 py-1 rounded-md text-xs font-semibold ${
-              violationCount > 0 ? 'bg-red-950 text-red-300 border border-red-800' : 'bg-slate-800 text-slate-300'
-            }`}
-          >
-            <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
-            Violations: {violationCount} / 5
-          </div>
+          {!isFileUploadExam && (
+            <>
+              {/* Violation Indicator */}
+              <div
+                className={`flex items-center px-3 py-1 rounded-md text-xs font-semibold ${
+                  violationCount > 0 ? 'bg-red-950 text-red-300 border border-red-800' : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
+                Violations: {violationCount} / 5
+              </div>
 
-          {/* Fullscreen Button */}
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className={`inline-flex items-center px-3 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition border ${
-              isFullscreen
-                ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                : 'bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold border-amber-400 animate-pulse shadow-sm'
-            }`}
-            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-            aria-label="Toggle Fullscreen Mode"
-          >
-            {isFullscreen ? (
-              <>
-                <Minimize className="h-4 w-4 mr-1.5 text-sky-400" />
-                <span>Fullscreen</span>
-              </>
-            ) : (
-              <>
-                <Maximize className="h-4 w-4 mr-1.5" />
-                <span>Fullscreen</span>
-              </>
-            )}
-          </button>
+              {/* Fullscreen Button */}
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className={`inline-flex items-center px-3 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition border ${
+                  isFullscreen
+                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                    : 'bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold border-amber-400 animate-pulse shadow-sm'
+                }`}
+                title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                aria-label="Toggle Fullscreen Mode"
+              >
+                {isFullscreen ? (
+                  <>
+                    <Minimize className="h-4 w-4 mr-1.5 text-sky-400" />
+                    <span>Fullscreen</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize className="h-4 w-4 mr-1.5" />
+                    <span>Fullscreen</span>
+                  </>
+                )}
+              </button>
+            </>
+          )}
 
           {/* Countdown Clock */}
           <div
@@ -576,7 +701,7 @@ export const ExamRoom: React.FC = () => {
       </header>
 
       {/* Violation Alert Banner */}
-      {warningMessage && (
+      {!isFileUploadExam && warningMessage && (
         <div className="bg-red-600 text-white px-6 py-2 text-sm font-semibold flex items-center justify-center space-x-3 animate-bounce">
           <AlertTriangle className="h-4 w-4 flex-shrink-0" />
           <span>{warningMessage}</span>
@@ -593,7 +718,7 @@ export const ExamRoom: React.FC = () => {
       )}
 
       {/* Non-Fullscreen Warning Strip */}
-      {!isFullscreen && hasEnteredFullscreen && !isTerminatedRef.current && (
+      {!isFileUploadExam && !isFullscreen && hasEnteredFullscreen && !isTerminatedRef.current && (
         <div className="bg-amber-500 text-slate-950 px-6 py-2 text-xs sm:text-sm font-semibold flex items-center justify-between shadow-sm border-b border-amber-600">
           <div className="flex items-center space-x-2">
             <AlertTriangle className="h-4 w-4 text-slate-950 flex-shrink-0" />
@@ -635,36 +760,48 @@ export const ExamRoom: React.FC = () => {
                 {currentQuestion.question_text}
               </div>
 
-              {/* Options List */}
-              <div className="space-y-3.5">
-                {currentQuestion.options.map((opt) => {
-                  const isSelected = answers[currentQuestion.id] === opt.id;
-                  return (
-                    <div
-                      key={opt.id}
-                      onClick={() => opt.id && handleSelectOption(currentQuestion.id, opt.id)}
-                      className={`flex items-center p-4 rounded-xl border-2 cursor-pointer transition ${
-                        isSelected
-                          ? 'border-sky-600 bg-sky-50/50 shadow-sm'
-                          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
+              {isFileUploadExam ? (
+                <FileUploadTask
+                  questionId={currentQuestion.id}
+                  submission={submissions[currentQuestion.id]}
+                  uploading={uploadingQuestionId === currentQuestion.id}
+                  onSelectFiles={(files) => handleFileSelect(currentQuestion.id, files)}
+                  onRemoveFile={(fileId) => handleRemoveFile(currentQuestion.id, fileId)}
+                  onDownloadFile={(fileId, filename) => handleDownloadFile(currentQuestion.id, fileId, filename)}
+                  error={uploadError}
+                />
+              ) : (
+                /* Options List */
+                <div className="space-y-3.5">
+                  {currentQuestion.options.map((opt) => {
+                    const isSelected = answers[currentQuestion.id] === opt.id;
+                    return (
                       <div
-                        className={`h-7 w-7 rounded-full flex items-center justify-center font-bold text-sm mr-4 transition ${
+                        key={opt.id}
+                        onClick={() => opt.id && handleSelectOption(currentQuestion.id, opt.id)}
+                        className={`flex items-center p-4 rounded-xl border-2 cursor-pointer transition ${
                           isSelected
-                            ? 'bg-sky-700 text-white'
-                            : 'bg-slate-100 text-slate-600 border border-slate-300'
+                            ? 'border-sky-600 bg-sky-50/50 shadow-sm'
+                            : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                         }`}
                       >
-                        {opt.option_key}
+                        <div
+                          className={`h-7 w-7 rounded-full flex items-center justify-center font-bold text-sm mr-4 transition ${
+                            isSelected
+                              ? 'bg-sky-700 text-white'
+                              : 'bg-slate-100 text-slate-600 border border-slate-300'
+                          }`}
+                        >
+                          {opt.option_key}
+                        </div>
+                        <div className="text-sm font-medium text-slate-800 flex-1">
+                          {opt.option_text}
+                        </div>
                       </div>
-                      <div className="text-sm font-medium text-slate-800 flex-1">
-                        {opt.option_text}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : (
             <div className="text-center py-20 text-slate-500">No questions found.</div>
@@ -681,22 +818,24 @@ export const ExamRoom: React.FC = () => {
             </button>
 
             <div className="flex items-center space-x-3">
-              <button
-                type="button"
-                onClick={toggleFullscreen}
-                className="hidden sm:inline-flex items-center px-3.5 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
-                title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-              >
-                {isFullscreen ? (
-                  <>
-                    <Minimize className="h-4 w-4 mr-1.5 text-slate-500" /> Fullscreen
-                  </>
-                ) : (
-                  <>
-                    <Maximize className="h-4 w-4 mr-1.5 text-amber-600" /> Fullscreen
-                  </>
-                )}
-              </button>
+              {!isFileUploadExam && (
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  className="hidden sm:inline-flex items-center px-3.5 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
+                  title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                >
+                  {isFullscreen ? (
+                    <>
+                      <Minimize className="h-4 w-4 mr-1.5 text-slate-500" /> Fullscreen
+                    </>
+                  ) : (
+                    <>
+                      <Maximize className="h-4 w-4 mr-1.5 text-amber-600" /> Fullscreen
+                    </>
+                  )}
+                </button>
+              )}
 
               <button
                 onClick={() => {
@@ -707,7 +846,7 @@ export const ExamRoom: React.FC = () => {
                 disabled={currentIndex === totalQuestions - 1}
                 className="inline-flex items-center px-5 py-2 rounded-lg bg-sky-700 hover:bg-sky-800 text-white text-sm font-semibold shadow-sm disabled:opacity-40 disabled:cursor-not-allowed transition"
               >
-                Save & Next <ChevronRight className="h-4 w-4 ml-1" />
+                {isFileUploadExam ? 'Next' : 'Save & Next'} <ChevronRight className="h-4 w-4 ml-1" />
               </button>
             </div>
           </div>
@@ -736,7 +875,9 @@ export const ExamRoom: React.FC = () => {
             <div className="grid grid-cols-5 gap-2.5">
               {attempt?.questions.map((q, idx) => {
                 const isCurrent = idx === currentIndex;
-                const isAnswered = answers[q.id] !== null && answers[q.id] !== undefined;
+                const isAnswered = isFileUploadExam
+                  ? (submissions[q.id]?.files.length || 0) > 0
+                  : answers[q.id] !== null && answers[q.id] !== undefined;
 
                 return (
                   <button
@@ -800,6 +941,103 @@ export const ExamRoom: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface FileUploadTaskProps {
+  questionId: number;
+  submission?: TaskSubmission;
+  uploading: boolean;
+  onSelectFiles: (files: FileList | null) => void;
+  onRemoveFile: (fileId: number) => void;
+  onDownloadFile: (fileId: number, filename: string) => void;
+  error: string | null;
+}
+
+const FileUploadTask: React.FC<FileUploadTaskProps> = ({
+  questionId,
+  submission,
+  uploading,
+  onSelectFiles,
+  onRemoveFile,
+  onDownloadFile,
+  error,
+}) => {
+  const inputId = `file-upload-${questionId}`;
+  const files = submission?.files || [];
+
+  return (
+    <div>
+      {error && (
+        <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      <label
+        htmlFor={inputId}
+        className={`flex flex-col items-center justify-center p-8 rounded-xl border-2 border-dashed cursor-pointer transition ${
+          uploading
+            ? 'border-slate-200 bg-slate-50 cursor-wait'
+            : 'border-sky-300 bg-sky-50/50 hover:bg-sky-50 hover:border-sky-400'
+        }`}
+      >
+        <UploadCloud className={`h-8 w-8 mb-2 ${uploading ? 'text-slate-400 animate-pulse' : 'text-sky-600'}`} />
+        <span className="text-sm font-semibold text-slate-800">
+          {uploading ? 'Uploading...' : 'Click to upload your file(s)'}
+        </span>
+        <span className="text-xs text-slate-500 mt-1">
+          Code, text, PDF or zip files - 50MB total max. Re-uploading replaces your previous submission for this task.
+        </span>
+        <input
+          id={inputId}
+          type="file"
+          multiple
+          disabled={uploading}
+          onChange={(e) => {
+            onSelectFiles(e.target.files);
+            e.target.value = '';
+          }}
+          className="hidden"
+        />
+      </label>
+
+      {files.length > 0 && (
+        <div className="mt-5 space-y-2">
+          <div className="text-xs font-bold uppercase text-slate-500">Uploaded Files</div>
+          {files.map((f) => (
+            <div
+              key={f.id}
+              className="flex items-center justify-between p-3 rounded-lg border border-slate-200 bg-slate-50 text-sm"
+            >
+              <div className="flex items-center space-x-2 min-w-0">
+                <Paperclip className="h-4 w-4 text-slate-400 flex-shrink-0" />
+                <span className="font-medium text-slate-800 truncate">{f.filename}</span>
+                <span className="text-xs text-slate-400 flex-shrink-0">({formatFileSize(f.size)})</span>
+              </div>
+              <div className="flex items-center space-x-1 flex-shrink-0 ml-3">
+                <button
+                  type="button"
+                  onClick={() => onDownloadFile(f.id, f.filename)}
+                  title="Download"
+                  className="p-1.5 rounded-md text-slate-500 hover:bg-slate-200 transition"
+                >
+                  <Download className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemoveFile(f.id)}
+                  title="Remove"
+                  className="p-1.5 rounded-md text-red-500 hover:bg-red-50 transition"
+                >
+                  <XIcon className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

@@ -10,6 +10,7 @@ from .models import (
     ExamAttempt,
     StudentAnswer,
     AttemptQuestion,
+    SubmissionFile,
 )
 
 
@@ -33,8 +34,8 @@ class OptionInline(admin.TabularInline):
 
 @admin.register(Question)
 class QuestionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'question_text', 'marks', 'category', 'difficulty', 'is_active')
-    list_filter = ('category', 'difficulty', 'is_active')
+    list_display = ('id', 'question_type', 'question_text', 'marks', 'category', 'difficulty', 'is_active')
+    list_filter = ('question_type', 'category', 'difficulty', 'is_active')
     search_fields = ('question_text',)
     inlines = [OptionInline]
 
@@ -51,16 +52,16 @@ class ExamQuestionInline(admin.TabularInline):
 
 @admin.register(Exam)
 class ExamAdmin(admin.ModelAdmin):
-    list_display = ('title', 'duration_minutes', 'start_datetime', 'end_datetime', 'is_active')
-    list_filter = ('is_active',)
+    list_display = ('title', 'exam_type', 'duration_minutes', 'start_datetime', 'end_datetime', 'is_active')
+    list_filter = ('exam_type', 'is_active')
     search_fields = ('title', 'description')
     inlines = [ExamDepartmentInline, ExamQuestionInline]
 
 
 @admin.register(ExamAttempt)
 class ExamAttemptAdmin(admin.ModelAdmin):
-    list_display = ('student', 'exam', 'status', 'score', 'max_score', 'percentage', 'violation_count', 'started_at')
-    list_filter = ('status', 'exam')
+    list_display = ('student', 'exam', 'status', 'score', 'max_score', 'percentage', 'is_graded', 'violation_count', 'started_at')
+    list_filter = ('status', 'is_graded', 'exam')
     search_fields = ('student__roll_number', 'student__full_name', 'exam__title')
 
 
@@ -71,5 +72,12 @@ class StudentAnswerAdmin(admin.ModelAdmin):
 
 @admin.register(AttemptQuestion)
 class AttemptQuestionAdmin(admin.ModelAdmin):
-    list_display = ('attempt', 'question', 'question_order', 'created_at')
+    list_display = ('attempt', 'question', 'question_order', 'manual_score', 'graded_at', 'created_at')
     list_filter = ('attempt__exam',)
+
+
+@admin.register(SubmissionFile)
+class SubmissionFileAdmin(admin.ModelAdmin):
+    list_display = ('attempt', 'question', 'original_filename', 'file_size', 'uploaded_at')
+    list_filter = ('attempt__exam',)
+    search_fields = ('original_filename', 'attempt__student__roll_number')

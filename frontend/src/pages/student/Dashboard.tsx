@@ -2,15 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { api, type ExamCard } from '../../api/client';
-import { 
-  FileText, 
-  Clock, 
-  Calendar, 
-  CheckCircle, 
-  AlertCircle, 
-  ArrowRight, 
-  BookOpen, 
-  RefreshCw 
+import {
+  FileText,
+  Clock,
+  Calendar,
+  CheckCircle,
+  AlertCircle,
+  ArrowRight,
+  BookOpen,
+  RefreshCw,
+  UploadCloud
 } from 'lucide-react';
 
 export const Dashboard: React.FC = () => {
@@ -28,8 +29,16 @@ export const Dashboard: React.FC = () => {
   // succeeds, so the student never lands mid-exam in a broken non-fullscreen
   // state. Must run synchronously inside the click handler (no awaits before
   // the request) so the browser still treats it as a user gesture.
-  const handleEnterExam = async (examId: number) => {
+  // File Upload exams aren't proctored (no violation tracking), so they skip
+  // the fullscreen requirement entirely and just navigate straight in.
+  const handleEnterExam = async (examId: number, examType: ExamCard['exam_type']) => {
     setFullscreenError(null);
+
+    if (examType === 'FILE_UPLOAD') {
+      navigate(`/exams/${examId}`);
+      return;
+    }
+
     setEnteringExamId(examId);
     try {
       const el = document.documentElement as HTMLElement & {
@@ -221,6 +230,12 @@ export const Dashboard: React.FC = () => {
                     {getStatusBadge(exam.status)}
                   </div>
 
+                  {exam.exam_type === 'FILE_UPLOAD' && (
+                    <span className="inline-flex items-center mb-2 px-2 py-0.5 rounded text-xs font-semibold bg-purple-100 text-purple-800">
+                      <UploadCloud className="h-3 w-3 mr-1" /> File Upload Exam
+                    </span>
+                  )}
+
                   <p className="text-sm text-slate-600 line-clamp-2 mb-4">
                     {exam.description || 'No description provided.'}
                   </p>
@@ -248,7 +263,7 @@ export const Dashboard: React.FC = () => {
                 <div className="p-4 bg-slate-50 border-t border-slate-100">
                   {exam.status === 'AVAILABLE' && (
                     <button
-                      onClick={() => handleEnterExam(exam.id)}
+                      onClick={() => handleEnterExam(exam.id, exam.exam_type)}
                       disabled={enteringExamId === exam.id}
                       className="w-full flex items-center justify-center py-2.5 px-4 rounded-lg bg-sky-700 hover:bg-sky-800 text-white font-semibold text-sm shadow-sm transition disabled:opacity-60"
                     >
@@ -260,7 +275,7 @@ export const Dashboard: React.FC = () => {
 
                   {exam.status === 'IN_PROGRESS' && (
                     <button
-                      onClick={() => handleEnterExam(exam.id)}
+                      onClick={() => handleEnterExam(exam.id, exam.exam_type)}
                       disabled={enteringExamId === exam.id}
                       className="w-full flex items-center justify-center py-2.5 px-4 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-sm shadow-sm transition disabled:opacity-60"
                     >

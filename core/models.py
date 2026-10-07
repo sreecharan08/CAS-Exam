@@ -27,8 +27,13 @@ class Student(models.Model):
 
 
 class Exam(models.Model):
+    EXAM_TYPE_CHOICES = (
+        ('MCQ', 'Multiple Choice'),
+        ('FILE_UPLOAD', 'File Upload'),
+    )
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, default='')
+    exam_type = models.CharField(max_length=20, choices=EXAM_TYPE_CHOICES, default='MCQ')
     duration_minutes = models.PositiveIntegerField(help_text="Duration in minutes")
     questions_per_attempt = models.PositiveIntegerField(default=30, help_text="Number of questions randomly selected per attempt")
     start_datetime = models.DateTimeField()
@@ -53,12 +58,17 @@ class ExamDepartment(models.Model):
 
 
 class Question(models.Model):
+    QUESTION_TYPE_CHOICES = (
+        ('MCQ', 'Multiple Choice'),
+        ('FILE_UPLOAD', 'File Upload'),
+    )
     source_id = models.CharField(max_length=50, blank=True, default='', db_index=True)
+    question_type = models.CharField(max_length=20, choices=QUESTION_TYPE_CHOICES, default='MCQ')
     question_text = models.TextField()
     marks = models.PositiveIntegerField(default=1)
     category = models.CharField(max_length=100, blank=True, default='')
     difficulty = models.CharField(max_length=50, blank=True, default='Medium')
-    explanation = models.TextField(blank=True, default='')
+    explanation = models.TextField(blank=True, default='', help_text="For MCQ: answer explanation. For File Upload: grading instructions shown to the admin reviewer.")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -123,6 +133,10 @@ class ExamAttempt(models.Model):
     percentage = models.FloatField(default=0.0)
     violation_count = models.PositiveIntegerField(default=0)
     submission_reason = models.CharField(max_length=50, choices=REASON_CHOICES, default='NORMAL')
+    # True for MCQ attempts (auto-scored) and for FILE_UPLOAD attempts once an
+    # admin has manually graded every task. False while a file-upload
+    # submission is awaiting review.
+    is_graded = models.BooleanField(default=True)
 
     class Meta:
         unique_together = ('student', 'exam')
@@ -150,9 +164,38 @@ class AttemptQuestion(models.Model):
     question_order = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Manual grading fields - only used for FILE_UPLOAD exam tasks.
+    manual_score = models.FloatField(null=True, blank=True)
+    feedback = models.TextField(blank=True, default='')
+    graded_at = models.DateTimeField(null=True, blank=True)
+    graded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='graded_tasks')
+
     class Meta:
         unique_together = (('attempt', 'question'), ('attempt', 'question_order'))
         ordering = ['question_order', 'id']
 
     def __str__(self):
         return f"Attempt {self.attempt_id} - Q{self.question_order}: {self.question_id}"
+
+
+def submission_file_path(instance, filename):
+    return f"submissions/exam_{instance.attempt.exam_id}/attempt_{instance.attempt_id}/question_{instance.question_id}/{filename}"
+
+
+class SubmissionFile(models.Model):
+    """
+    A file a student uploaded as their answer to a FILE_UPLOAD task. Never
+    executed server-side - admins review/download these manually.
+    """
+    attempt = models.ForeignKey(ExamAttempt, on_delete=models.CASCADE, related_name='submission_files')
+    question = models.ForeignKey(Question, on_delete=models.CASCADE, related_name='submission_files')
+    file = models.FileField(upload_to=submission_file_path, max_length=500)
+    original_filename = models.CharField(max_length=255)
+    file_size = models.PositiveIntegerField(default=0)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at']
+
+    def __str__(self):
+        return f"Attempt {self.attempt_id} - Q{self.question_id}: {self.original_filename}"
