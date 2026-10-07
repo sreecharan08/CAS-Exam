@@ -176,7 +176,7 @@ OK
 - **Window Blur Detection**: `window.onblur` detects loss of browser window focus.
 - **Fullscreen Mode**: Exam requires fullscreen; exiting fullscreen records an integrity violation.
 - **Debounced Backend Increments**: Server increments `violation_count` atomically (with a client debounce to avoid false multi-counts).
-- **Auto-Submission**: Upon reaching **3 violations**, the server automatically submits the attempt with status `AUTO_SUBMITTED` and reason `EXAM_INTEGRITY_VIOLATION`. The attempt is permanently locked and cannot be reopened.
+- **Auto-Submission**: Upon reaching **5 violations**, the server automatically submits the attempt with status `AUTO_SUBMITTED` and reason `EXAM_INTEGRITY_VIOLATION`. The attempt is permanently locked and cannot be reopened.
 - **Interaction Protection**: Right-click, text selection, and copy shortcuts are disabled inside the exam room without interfering with option selection, scrolling, or navigation.
 
 ---

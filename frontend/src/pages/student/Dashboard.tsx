@@ -21,6 +21,39 @@ export const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'ALL' | 'AVAILABLE' | 'UPCOMING' | 'COMPLETED'>('ALL');
+  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
+  const [enteringExamId, setEnteringExamId] = useState<number | null>(null);
+
+  // Requests fullscreen and only navigates into the exam room if it actually
+  // succeeds, so the student never lands mid-exam in a broken non-fullscreen
+  // state. Must run synchronously inside the click handler (no awaits before
+  // the request) so the browser still treats it as a user gesture.
+  const handleEnterExam = async (examId: number) => {
+    setFullscreenError(null);
+    setEnteringExamId(examId);
+    try {
+      const el = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void>;
+        msRequestFullscreen?: () => Promise<void>;
+      };
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if (el.webkitRequestFullscreen) {
+        await el.webkitRequestFullscreen();
+      } else if (el.msRequestFullscreen) {
+        await el.msRequestFullscreen();
+      } else {
+        throw new Error('Fullscreen is not supported in this browser.');
+      }
+      navigate(`/exams/${examId}`);
+    } catch (err) {
+      setFullscreenError(
+        'Fullscreen permission is required to start the examination. Please allow fullscreen access in your browser and try again.'
+      );
+    } finally {
+      setEnteringExamId(null);
+    }
+  };
 
   const fetchExams = async () => {
     setLoading(true);
@@ -152,6 +185,13 @@ export const Dashboard: React.FC = () => {
           </div>
         )}
 
+        {fullscreenError && (
+          <div className="mb-6 p-4 rounded-lg bg-red-50 border border-red-200 flex items-start space-x-3 text-red-700">
+            <AlertCircle className="h-5 w-5 mt-0.5 flex-shrink-0 text-red-500" />
+            <div className="text-sm">{fullscreenError}</div>
+          </div>
+        )}
+
         {/* Exams Grid */}
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center space-y-3">
@@ -208,19 +248,25 @@ export const Dashboard: React.FC = () => {
                 <div className="p-4 bg-slate-50 border-t border-slate-100">
                   {exam.status === 'AVAILABLE' && (
                     <button
-                      onClick={() => navigate(`/exams/${exam.id}`)}
-                      className="w-full flex items-center justify-center py-2.5 px-4 rounded-lg bg-sky-700 hover:bg-sky-800 text-white font-semibold text-sm shadow-sm transition"
+                      onClick={() => handleEnterExam(exam.id)}
+                      disabled={enteringExamId === exam.id}
+                      className="w-full flex items-center justify-center py-2.5 px-4 rounded-lg bg-sky-700 hover:bg-sky-800 text-white font-semibold text-sm shadow-sm transition disabled:opacity-60"
                     >
-                      Start Examination <ArrowRight className="h-4 w-4 ml-1.5" />
+                      {enteringExamId === exam.id ? 'Entering Fullscreen...' : (
+                        <>Start Examination <ArrowRight className="h-4 w-4 ml-1.5" /></>
+                      )}
                     </button>
                   )}
 
                   {exam.status === 'IN_PROGRESS' && (
                     <button
-                      onClick={() => navigate(`/exams/${exam.id}`)}
-                      className="w-full flex items-center justify-center py-2.5 px-4 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-sm shadow-sm transition"
+                      onClick={() => handleEnterExam(exam.id)}
+                      disabled={enteringExamId === exam.id}
+                      className="w-full flex items-center justify-center py-2.5 px-4 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-sm shadow-sm transition disabled:opacity-60"
                     >
-                      Resume Examination <ArrowRight className="h-4 w-4 ml-1.5" />
+                      {enteringExamId === exam.id ? 'Entering Fullscreen...' : (
+                        <>Resume Examination <ArrowRight className="h-4 w-4 ml-1.5" /></>
+                      )}
                     </button>
                   )}
 

@@ -27,9 +27,12 @@ export const ExamRoom: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fullscreen gate and state
-  const [hasEnteredFullscreen, setHasEnteredFullscreen] = useState(false);
+  // Fullscreen gate and state. If the Dashboard already put us into
+  // fullscreen before navigating here, honor that immediately so the exam
+  // starts without a second confirmation click.
+  const [hasEnteredFullscreen, setHasEnteredFullscreen] = useState<boolean>(() => Boolean(document.fullscreenElement));
   const [isFullscreen, setIsFullscreen] = useState<boolean>(() => Boolean(document.fullscreenElement));
+  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
 
   // Timer
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
@@ -51,6 +54,14 @@ export const ExamRoom: React.FC = () => {
   // Cooldown ref for debouncing violations
   const lastViolationTimeRef = useRef<number>(0);
   const isTerminatedRef = useRef<boolean>(false);
+
+  // Tracks which examId initExam has already fired a start/resume request
+  // for. React 18 StrictMode double-invokes effects in development, which
+  // without this guard sends two concurrent POST /start/ requests - the
+  // second collides with the one-attempt-per-student DB constraint and
+  // surfaces a spurious "Access Denied" error even though the first request
+  // succeeded.
+  const initializedExamIdRef = useRef<string | null>(null);
 
   // 1. Initialize or resume exam attempt
   const initExam = useCallback(async () => {
@@ -80,15 +91,45 @@ export const ExamRoom: React.FC = () => {
         setAutoSubmitReason(data.submission_reason);
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to start or resume the examination.');
+      const message: string = err.message || 'Failed to start or resume the examination.';
+
+      // The attempt already exists but is finished (submitted earlier, or just
+      // expired by the time this request reached the server). That's not an
+      // access problem - fetch the real attempt and show the normal "submitted"
+      // screen instead of a scary "Access Denied" page.
+      const isFinishedAttempt = message.includes('already been submitted') || message.includes('time expired');
+      if (isFinishedAttempt) {
+        try {
+          const examDetail = await api.getStudentExamDetail(parseInt(examId, 10));
+          const attemptId = examDetail.exam.attempt_id;
+          if (attemptId) {
+            const attemptData = await api.getAttemptDetail(attemptId);
+            setAttempt(attemptData);
+            setRemainingSeconds(attemptData.remaining_seconds);
+            setViolationCount(attemptData.violation_count);
+            if (attemptData.status === 'SUBMITTED' || attemptData.status === 'AUTO_SUBMITTED') {
+              isTerminatedRef.current = true;
+              setAutoSubmitted(attemptData.status === 'AUTO_SUBMITTED');
+              setAutoSubmitReason(attemptData.submission_reason);
+            }
+            return;
+          }
+        } catch {
+          // Fall through to the generic error screen below.
+        }
+      }
+
+      setError(message);
     } finally {
       setLoading(false);
     }
   }, [examId]);
 
   useEffect(() => {
+    if (!examId || initializedExamIdRef.current === examId) return;
+    initializedExamIdRef.current = examId;
     initExam();
-  }, [initExam]);
+  }, [examId, initExam]);
 
   // 2. Countdown Timer
   useEffect(() => {
@@ -224,8 +265,12 @@ export const ExamRoom: React.FC = () => {
     };
   }, []);
 
-  // Request fullscreen and begin exam
+  // Request fullscreen and begin exam. Only marks the exam as "entered" when
+  // fullscreen actually activates - never proceeds on a denied/failed
+  // request, which previously left students stuck in a broken non-fullscreen
+  // state with a nagging "Return to Fullscreen" banner.
   const enterExamFullscreen = async () => {
+    setFullscreenError(null);
     try {
       if (document.documentElement.requestFullscreen) {
         await document.documentElement.requestFullscreen();
@@ -233,12 +278,17 @@ export const ExamRoom: React.FC = () => {
         await (document.documentElement as any).webkitRequestFullscreen();
       } else if ((document.documentElement as any).msRequestFullscreen) {
         await (document.documentElement as any).msRequestFullscreen();
+      } else {
+        throw new Error('Fullscreen is not supported in this browser.');
       }
       setIsFullscreen(true);
+      setHasEnteredFullscreen(true);
     } catch (err) {
       console.warn('Fullscreen request bypassed or denied:', err);
+      setFullscreenError(
+        'Fullscreen permission is required to continue this exam. Please allow fullscreen access and try again.'
+      );
     }
-    setHasEnteredFullscreen(true);
   };
 
   // Fullscreen button action handler
@@ -364,35 +414,31 @@ export const ExamRoom: React.FC = () => {
     );
   }
 
-  // Gatekeeper: Fullscreen Prompt Modal
+  // Fullscreen recovery screen. Normally the Dashboard already put us into
+  // fullscreen before navigating here, so this won't show. It only appears
+  // if fullscreen was lost in a way that needs a fresh user gesture to
+  // restore - e.g. a page refresh or a direct URL visit mid-exam.
   if (!hasEnteredFullscreen && attempt?.status === 'IN_PROGRESS' && !isTerminatedRef.current) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="bg-white max-w-lg w-full rounded-2xl shadow-2xl p-8 border border-slate-200">
-          <div className="flex items-center space-x-3 text-sky-700 mb-4">
-            <Maximize className="h-8 w-8" />
-            <h2 className="text-2xl font-bold text-slate-900">Examination Instructions</h2>
-          </div>
+        <div className="bg-white max-w-md w-full rounded-2xl shadow-2xl p-8 border border-slate-200 text-center">
+          <Maximize className="h-10 w-10 text-sky-700 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-slate-900 mb-2">Fullscreen Required</h2>
+          <p className="text-sm text-slate-600 mb-6">
+            <strong>{attempt.exam_title}</strong> must run in fullscreen mode. Click below to continue your exam.
+          </p>
 
-          <div className="space-y-4 text-sm text-slate-600 mb-8 leading-relaxed">
-            <div className="p-3 bg-sky-50 rounded-lg border border-sky-100 text-sky-900">
-              <strong>{attempt.exam_title}</strong>
-              <div className="text-xs text-sky-700 mt-0.5">Duration: {attempt.duration_minutes} minutes | Questions: {attempt.questions.length}</div>
+          {fullscreenError && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 text-left">
+              {fullscreenError}
             </div>
-
-            <ul className="list-disc pl-5 space-y-2 text-slate-700">
-              <li>The exam will run in <strong>Fullscreen Mode</strong>.</li>
-              <li>Leaving the exam window, switching tabs, or exiting fullscreen is recorded as a violation.</li>
-              <li>A maximum of <strong>3 violations</strong> is permitted. On the 3rd violation, your exam will be automatically submitted.</li>
-              <li>Your answers are autosaved in real-time to the university server.</li>
-            </ul>
-          </div>
+          )}
 
           <button
             onClick={enterExamFullscreen}
             className="w-full flex items-center justify-center py-3.5 px-6 rounded-xl bg-sky-700 hover:bg-sky-800 text-white font-bold text-base shadow-lg transition"
           >
-            <Maximize className="h-5 w-5 mr-2" /> Enter Fullscreen & Begin Exam
+            <Maximize className="h-5 w-5 mr-2" /> Enter Fullscreen & Continue
           </button>
         </div>
       </div>
@@ -421,7 +467,7 @@ export const ExamRoom: React.FC = () => {
 
           <p className="text-sm text-slate-600 mb-6">
             {autoSubmitReason === 'EXAM_INTEGRITY_VIOLATION' || attempt?.submission_reason === 'EXAM_INTEGRITY_VIOLATION'
-              ? 'Your exam was automatically submitted because the maximum number of integrity violations (3/3) was reached.'
+              ? 'Your exam was automatically submitted because the maximum number of integrity violations (5/5) was reached.'
               : autoSubmitReason === 'TIME_EXPIRED' || attempt?.submission_reason === 'TIME_EXPIRED'
               ? 'Your exam was automatically submitted because the exam time expired.'
               : 'Your responses have been recorded on the server.'}
@@ -438,7 +484,7 @@ export const ExamRoom: React.FC = () => {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Violations Recorded:</span>
-              <span className="font-bold text-red-600">{attempt?.violation_count || violationCount} / 3</span>
+              <span className="font-bold text-red-600">{attempt?.violation_count || violationCount} / 5</span>
             </div>
           </div>
 
@@ -480,7 +526,7 @@ export const ExamRoom: React.FC = () => {
             }`}
           >
             <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
-            Violations: {violationCount} / 3
+            Violations: {violationCount} / 5
           </div>
 
           {/* Fullscreen Button */}

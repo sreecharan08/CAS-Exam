@@ -167,9 +167,11 @@ export const Exams: React.FC = () => {
       return;
     }
 
-    if (selectedQuestions.length > 0 && selectedQuestions.length < questionsPerAttempt) {
+    if (selectedQuestions.length < questionsPerAttempt) {
       setModalError(
-        `Assigned question pool size (${selectedQuestions.length}) must be at least the questions per attempt (${questionsPerAttempt}).`
+        selectedQuestions.length === 0
+          ? `Select at least ${questionsPerAttempt} question(s) from the question bank (Questions / Student is set to ${questionsPerAttempt}).`
+          : `Assigned question pool size (${selectedQuestions.length}) must be at least the questions per attempt (${questionsPerAttempt}).`
       );
       return;
     }

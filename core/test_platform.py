@@ -579,20 +579,22 @@ class CASPlatformComprehensiveTests(TestCase):
         v = self.client.post(f'/api/attempts/{attempt_id}/violation/', {'violation_count': 0})
         self.assertEqual(v.data['violation_count'], 1)
 
-    # 30. Third violation auto-submits
-    def test_third_violation_auto_submits(self):
+    # 30. Fifth violation auto-submits
+    def test_fifth_violation_auto_submits(self):
         self.client.force_authenticate(user=self.cs_user)
         start_resp = self.client.post(f'/api/exams/{self.cs_exam.id}/start/')
         attempt_id = start_resp.data['id']
 
         self.client.post(f'/api/attempts/{attempt_id}/violation/')
         self.client.post(f'/api/attempts/{attempt_id}/violation/')
-        v3 = self.client.post(f'/api/attempts/{attempt_id}/violation/')
+        self.client.post(f'/api/attempts/{attempt_id}/violation/')
+        self.client.post(f'/api/attempts/{attempt_id}/violation/')
+        v5 = self.client.post(f'/api/attempts/{attempt_id}/violation/')
 
-        self.assertEqual(v3.status_code, status.HTTP_200_OK)
-        self.assertEqual(v3.data['violation_count'], 3)
-        self.assertTrue(v3.data['auto_submitted'])
-        self.assertEqual(v3.data['status'], 'AUTO_SUBMITTED')
+        self.assertEqual(v5.status_code, status.HTTP_200_OK)
+        self.assertEqual(v5.data['violation_count'], 5)
+        self.assertTrue(v5.data['auto_submitted'])
+        self.assertEqual(v5.data['status'], 'AUTO_SUBMITTED')
 
         # Check DB state
         attempt = ExamAttempt.objects.get(id=attempt_id)
@@ -605,8 +607,8 @@ class CASPlatformComprehensiveTests(TestCase):
         start_resp = self.client.post(f'/api/exams/{self.cs_exam.id}/start/')
         attempt_id = start_resp.data['id']
 
-        # Trigger 3 violations
-        for _ in range(3):
+        # Trigger 5 violations
+        for _ in range(5):
             self.client.post(f'/api/attempts/{attempt_id}/violation/')
 
         # Try to modify answer

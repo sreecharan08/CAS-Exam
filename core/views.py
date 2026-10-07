@@ -3,7 +3,7 @@ import random
 from datetime import timedelta
 from django.contrib.auth import authenticate, login as django_login, logout as django_logout
 from django.contrib.auth.models import User
-from django.db import transaction, models
+from django.db import transaction, models, IntegrityError
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils import timezone
@@ -331,22 +331,34 @@ def student_start_exam(request, exam_id):
     else:
         selected_question_ids = random.sample(available_question_ids, req_count)
 
-    with transaction.atomic():
-        attempt = ExamAttempt.objects.create(
-            student=student,
-            exam=exam,
-            status='IN_PROGRESS',
-            started_at=now,
-        )
-        attempt_questions = [
-            AttemptQuestion(
-                attempt=attempt,
-                question_id=qid,
-                question_order=idx
+    try:
+        with transaction.atomic():
+            attempt = ExamAttempt.objects.create(
+                student=student,
+                exam=exam,
+                status='IN_PROGRESS',
+                started_at=now,
             )
-            for idx, qid in enumerate(selected_question_ids, start=1)
-        ]
-        AttemptQuestion.objects.bulk_create(attempt_questions)
+            attempt_questions = [
+                AttemptQuestion(
+                    attempt=attempt,
+                    question_id=qid,
+                    question_order=idx
+                )
+                for idx, qid in enumerate(selected_question_ids, start=1)
+            ]
+            AttemptQuestion.objects.bulk_create(attempt_questions)
+    except IntegrityError:
+        # A concurrent request (e.g. a duplicate double-submit from the
+        # client) already created the attempt for this student/exam pair.
+        # Treat this the same as the "resume existing attempt" path above
+        # instead of surfacing a 500 to a request that is, from the
+        # student's perspective, not actually an error.
+        attempt = ExamAttempt.objects.filter(student=student, exam=exam).first()
+        if not attempt:
+            raise
+        serializer = ExamAttemptDetailSerializer(attempt)
+        return Response(serializer.data)
 
     serializer = ExamAttemptDetailSerializer(attempt)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -498,7 +510,7 @@ def student_record_violation(request, attempt_id):
     """
     Records an integrity violation (window blur, tab switch, or fullscreen exit).
     Backend increments authoritative violation_count.
-    After 3 violations, the exam is automatically submitted.
+    After 5 violations, the exam is automatically submitted.
     """
     student = request.user.student_profile
     try:
@@ -516,7 +528,7 @@ def student_record_violation(request, attempt_id):
 
         locked_attempt.violation_count += 1
 
-        if locked_attempt.violation_count >= 3:
+        if locked_attempt.violation_count >= 5:
             score, max_score, percentage = calculate_attempt_score(locked_attempt)
             locked_attempt.score = score
             locked_attempt.max_score = max_score

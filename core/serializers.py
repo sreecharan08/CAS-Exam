@@ -206,6 +206,23 @@ class AdminExamSerializer(serializers.ModelSerializer):
         end = data.get('end_datetime', self.instance.end_datetime if self.instance else None)
         if start and end and start >= end:
             raise serializers.ValidationError({"end_datetime": "End datetime must be after start datetime."})
+
+        questions_per_attempt = data.get(
+            'questions_per_attempt',
+            self.instance.questions_per_attempt if self.instance else None
+        )
+        if 'questions' in data:
+            pool_size = len(data['questions'])
+        elif self.instance:
+            pool_size = self.instance.exam_questions.count()
+        else:
+            pool_size = 0
+
+        if questions_per_attempt and pool_size < questions_per_attempt:
+            raise serializers.ValidationError({
+                "questions": f"Assigned question pool size ({pool_size}) must be at least the questions per attempt ({questions_per_attempt})."
+            })
+
         return data
 
     def create(self, validated_data):
